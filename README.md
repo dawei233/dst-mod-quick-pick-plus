@@ -163,7 +163,7 @@ end
 [GNU General Public License v3.0](LICENSE) 或更高版本。
 
 ```
-QuickPickPlus · 快速采集（通用版）
+Quick Pick Plus · 快速采集（通用版）
 Copyright (C) 2026 dawei233
 
 This program is free software: you can redistribute it and/or modify it under

@@ -1,4 +1,4 @@
--- QuickPickPlus · 快速采集（通用版）
+-- Quick Pick Plus · 快速采集（通用版）
 -- Copyright (C) 2026 dawei233
 -- 依 GNU GPL v3（或任何更新版本）发布，不作任何担保。完整条款见随附的 LICENSE。
 
@@ -106,6 +106,10 @@ all_clients_require_mod = false
 client_only_mod = false
 
 server_filter_tags = { "Quick Pick", "utility", "tweak" }
+
+-- 游戏内 mod 列表里显示的图标（128x128，用 Mod Tools 的 png.exe 从 preview 生成）
+icon_atlas = "modicon.xml"
+icon = "modicon.tex"
 
 local boolean_option = {
     { description = Lg and "开" or "On", data = true },

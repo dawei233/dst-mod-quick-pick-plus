@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-QuickPickPlus 离线桩（仓库根目录下运行：python tests/test_quickpickplus.py）
+Quick Pick Plus 离线桩（仓库根目录下运行：python tests/test_quickpickplus.py）
 ==========================================================
 这次的核心约束：**桩必须还原真实的 ActionHandler 语义**。
 
