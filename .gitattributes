@@ -1,0 +1,13 @@
+# DST 读得了 CRLF，但源码统一用 LF，避免 diff 噪音
+* text=auto eol=lf
+
+*.lua  text eol=lf
+*.md   text eol=lf
+*.txt  text eol=lf
+
+# 二进制 / 资源
+*.tex  binary
+*.xml  text eol=lf
+*.png  binary
+*.jpg  binary
+*.zip  binary
