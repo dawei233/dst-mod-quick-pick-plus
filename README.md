@@ -107,18 +107,31 @@ end
 
 ---
 
-## 致谢 / 许可
+## 与上游项目的关系 / 致谢
 
-机制参考自以下两个 **GPL-3.0** 项目，特此致谢：
+本项目基于工坊 GPL-3.0 项目开发，渊源如下。
 
-- **Quick Pick+ (Woby Edition)** by **Jotave** — 工坊 [3739258809](https://steamcommunity.com/sharedfiles/filedetails/?id=3739258809)
-  - 借鉴：`deststate` 的包装手法、用 `farm_plant` 标签覆盖全部农场作物、
-    骑乘时 `mount_valid` 的处理，以及最重要的一条 ——
-    **不要设 `pickable.quickpick` 以免破坏 Woby 采集**（这条是本项目 2.0.0 的关键修正）。
-- **Quick Pick** by **辣椒小皇纸** — 工坊 [2921270365](https://steamcommunity.com/sharedfiles/filedetails/?id=2921270365)
-  / [github.com/jupitersh/dst-mod-quick-pick](https://github.com/jupitersh/dst-mod-quick-pick)
-  - 快速采集的最初实现。
+### 主要上游：[Quick Pick+ (Woby Edition)](https://steamcommunity.com/sharedfiles/filedetails/?id=3739258809) by **Jotave**
 
+以下做法来自该项目：
+
+- 包装 `handler.deststate`（先委托原逻辑、再升级慢状态）的挂点手法；
+- 用本体自带的 **`farm_plant`** 标签覆盖全部农场作物与杂草；
+- 骑乘时给 `HARVEST` / `TAKEITEM` 补 `mount_valid`（本体没标，不补的话骑乘时选项根本不出现）；
+- **最关键的结论**：不要设 `pickable.quickpick`，否则 Walter 的 Woby 会跳过该植物
+  —— 本项目 1.0.0 正是踩了这个坑，2.0.0 靠这条结论修掉。
+
+### 更上游：[Quick Pick](https://steamcommunity.com/sharedfiles/filedetails/?id=2921270365) by **辣椒小皇纸**
+
+快速采集的最初实现（[github.com/jupitersh/dst-mod-quick-pick](https://github.com/jupitersh/dst-mod-quick-pick)）。
+
+### 本项目新增
+
+**「零白名单」的整体设计** —— 用 `AddComponentPostInit` 给「可采集 / 可翻找组件」
+本身打标记，而不维护任何 prefab 名单，从而自动覆盖本体更新与其它 mod 新增的植物。
+上游两个项目都仍是名单制（Quick Pick+ 只在农场作物一族上做到了通用）。
+
+因上述渊源，本项目依 **GPL-3.0** 发布，与两个上游项目相同。
 
 ---
 

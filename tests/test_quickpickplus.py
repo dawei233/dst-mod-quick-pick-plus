@@ -57,6 +57,15 @@ show("两个状态图都注册（服务端 + 客户端）",
 show("处理了 mount_valid（骑乘解锁 HARVEST/TAKEITEM）", "mount_valid" in _eff)
 show("致谢里写明参考来源", "Jotave" in SRC and "3739258809" in SRC and "2921270365" in SRC)
 
+# 从 modmain 源码动态解析自定义标签值 —— 以后改标签名不会漏
+_m = re.search(r'local\s+FAST_TAG\s*=\s*"([^"]+)"', SRC)
+FAST_TAG = _m.group(1) if _m else "??"
+_m = re.search(r'local\s+TAKE_FAST_TAG\s*=\s*"([^"]+)"', SRC)
+TAKE_TAG = _m.group(1) if _m else "??"
+show("能从源码解析出自定义标签值",
+     FAST_TAG != "??" and TAKE_TAG != "??",
+     "%s / %s" % (FAST_TAG, TAKE_TAG))
+
 
 # =====================================================================
 #  1) 搭一个"像本体"的沙箱
@@ -425,18 +434,18 @@ def act(sg, action, inst, target=None, invobject=None):
 # --- 标签是否真的打上了 ---------------------------------------------
 print("\n[A] 标记阶段")
 show("普通植物被打上我们的 FAST_TAG",
-     L.eval('E_SAPLING:HasTag("qpp_fast")') == True)
+     L.eval('E_SAPLING:HasTag("%s")' % FAST_TAG) == True)
 show("★ 但 pickable.quickpick 仍是 false（Woby 安全）",
      L.eval("E_SAPLING.components.pickable.quickpick") == False)
 show("浆果丛也打上了（→ 骑乘/摇晃场景可用）",
-     L.eval('E_BERRY:HasTag("qpp_fast")') == True)
+     L.eval('E_BERRY:HasTag("%s")' % FAST_TAG) == True)
 show("可搜索物被打上 FAST_TAG",
-     L.eval('E_FLOTSAM:HasTag("qpp_fast")') == True)
+     L.eval('E_FLOTSAM:HasTag("%s")' % FAST_TAG) == True)
 show("食人花被 PrefabPostInit 打上 TAKE_FAST_TAG",
      L.eval('(function() local fns = PREFAB_POSTINIT["lureplant"]; '
             'if fns == nil then return false end; '
             'local e = mkEnt({}, false); for _, fn in ipairs(fns) do fn(e) end; '
-            'return e:HasTag("qpp_takefast") end)()') == True)
+            'return e:HasTag("%s") end)()' % TAKE_TAG) == True)
 
 # 桩自检：别因为夹具本身没设上标签而误判（上一版就踩过 ipairs 遍历哈希表的坑）
 show("桩自检 · E_NOQP 带 noquickpick",

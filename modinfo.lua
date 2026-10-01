@@ -29,13 +29,20 @@ description = Lg and
 所以浆果丛这类"摇晃型"植物永远走慢动作 —— 旧写法给它们加 quickpick 也没用。
 本 Mod 可选把抖动型一并变快。
 
-【致谢 / 许可】
-机制参考自以下 GPL-3.0 项目，特此致谢：
-  · Quick Pick+ (Woby Edition) by Jotave —— 工坊 3739258809
-    借鉴了 deststate 包装手法、farm_plant 标签覆盖农场作物、
-    骑乘时的 mount_valid 处理，以及"不要设 pickable.quickpick"这一关键发现。
-  · Quick Pick by 辣椒小皇纸 —— 工坊 2921270365
-    快速采集的最初实现。]]
+【与上游项目的关系 / 许可】
+本项目基于工坊 GPL-3.0 项目「Quick Pick+ (Woby Edition)」by Jotave
+（工坊 3739258809）开发。来自它的做法：
+  · 包装 deststate（先委托原逻辑、再升级慢状态）的挂点手法
+  · 用本体自带的 farm_plant 标签覆盖全部农场作物与杂草
+  · 骑乘时给 HARVEST / TAKEITEM 补 mount_valid
+  · 以及最关键的一条结论 —— 不要设 pickable.quickpick，否则会让
+    Walter 的 Woby 跳过该植物
+更上游为「Quick Pick」by 辣椒小皇纸（工坊 2921270365），是最初的实现。
+
+本项目新增的是「零白名单」的整体设计 —— 用 AddComponentPostInit 给
+「可采集 / 可翻找组件」本身打标记，不维护任何 prefab 名单，
+从而自动覆盖本体更新与其它 mod 新增的植物。
+因上述渊源，本项目依 GPL-3.0 发布。]]
 or
 [[Makes almost everything pick quickly -- with NO prefab whitelist.
 
@@ -54,10 +61,18 @@ Four things it does:
 4. Walter-safe -- it deliberately does NOT set pickable.quickpick, because doing so makes
    Woby's "Furry Forager" skip that plant and lose the bonus food.
 
-Credits / License: mechanics inspired by two GPL-3.0 projects --
-  Quick Pick+ (Woby Edition) by Jotave (workshop 3739258809) and
-  Quick Pick by 辣椒小皇纸 (workshop 2921270365).
-This is an independent rewrite and contains none of their source code.]]
+Credits / License: this project is built upon the GPL-3.0 project
+Quick Pick+ (Woby Edition) by Jotave (workshop 3739258809) --
+from it come the deststate wrapping approach, the use of the game's own
+"farm_plant" tag to cover every farm crop and weed, the mount_valid fix for
+HARVEST/TAKEITEM while riding, and the key finding that setting
+pickable.quickpick breaks Woby's foraging. The lureplant snippet and the
+tag naming also follow it.
+Upstream of that: Quick Pick by 辣椒小皇纸 (workshop 2921270365).
+
+New here: the "no whitelist" design -- tagging the pickable/searchable
+components themselves via AddComponentPostInit, so nothing has to be listed.
+Released under GPL-3.0, same as both upstream projects.]]
 
 author = "dawei233"
 version = "2.0.0"

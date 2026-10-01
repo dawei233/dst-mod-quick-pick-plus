@@ -63,16 +63,22 @@
 --  【覆盖范围】wilson（服务端权威）+ wilson_client（客户端预测）两个图都补，
 --    否则会出现「客户端预测慢动作、服务端已经做完」的抖动。
 --
---  【致谢 / 许可】
---    机制参考自工坊两个 GPL-3.0 项目：
---      · Quick Pick+ (Woby Edition) by Jotave  — 工坊 3739258809
---        借鉴：deststate 包装手法、「farm_plant 标签覆盖全部农场作物/杂草」、
---              骑乘三件套（PICK / PICKUP / TAKEITEM 的 mount_valid）、
---              以及最重要的一条 —— **不要设 pickable.quickpick 以免破坏 Woby 采集**。
---      · Quick Pick by 辣椒小皇纸  — 工坊 2921270365 / github.com/jupitersh/dst-mod-quick-pick
---        快速采集的最初实现。
---    本项目基于上述项目开发，同样以 GPL-3.0 发布。
---    如对外发布，建议同样以 GPL-3.0 授权并公开源码。
+--  【与上游项目的关系 / 许可】
+--    本项目基于工坊 GPL-3.0 项目「Quick Pick+ (Woby Edition)」by **Jotave**
+--    （工坊 3739258809）开发。来自该项目的做法：
+--      · 包装 handler.deststate（先委托原逻辑、再升级慢状态）的手法；
+--      · 用本体自带的 `farm_plant` 标签覆盖全部农场作物与杂草；
+--      · 骑乘时给 HARVEST / TAKEITEM 补 `mount_valid`；
+--      · 最关键的一条结论 —— 不要设 `pickable.quickpick`，否则会让
+--        Walter 的 Woby 跳过该植物。
+--    更上游还有「Quick Pick」by 辣椒小皇纸（工坊 2921270365 / github.com/jupitersh/dst-mod-quick-pick），
+--    是最初的快速采集实现。
+--
+--    **本项目在此基础上新增的部分**：「零白名单」的整体设计 ——
+--    用 AddComponentPostInit 给「可采集 / 可翻找组件」本身打标记，
+--    而不维护任何 prefab 名单。
+--
+--    依 GPL-3.0（或任何更新版本）发布，完整条款见随附的 LICENSE 文件。
 --=====================================================================
 
 GLOBAL.setmetatable(env, { __index = function(t, k) return GLOBAL.rawget(GLOBAL, k) end })
@@ -93,7 +99,7 @@ local LureTake      = GetModConfigData("lureplant_take")
 -- ---------------------------------------------------------------
 -- 常量与工具
 -- ---------------------------------------------------------------
-local FAST_TAG      = "qpp_fast"        -- 我们自己打的标记（可采集 / 可翻找）
+local FAST_TAG      = "qpp_fast"        -- 本 mod 自己的标记（可采集 / 可翻找）
 local TAKE_FAST_TAG = "qpp_takefast"    -- 食人花（TAKEITEM）
 local SHORT         = "doshortaction"             -- 10 帧 ≈ 0.33s
 local SLOW          = { dolongaction = true, domediumaction = true }
