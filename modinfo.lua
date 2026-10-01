@@ -42,6 +42,14 @@ description = Lg and
 本项目新增的是「零白名单」的整体设计 —— 用 AddComponentPostInit 给
 「可采集 / 可翻找组件」本身打标记，不维护任何 prefab 名单，
 从而自动覆盖本体更新与其它 mod 新增的植物。
+
+【开发方式】
+本 mod 由 AI 辅助开发（作者定方向与取舍，AI 负责绝大部分取证、实现与测试）。
+作者在做的方向是：用 AI 辅助去接手那些"老的、长期没有更新"的 mod ——
+读懂它原本的机制，然后做一个跟得上游戏更新、覆盖也更完整的版本。
+所有项目都尽量全部开源，遵循 GPL-3.0（或沿用上游原有许可证）。
+源码：https://github.com/dawei233/dst-mod-quick-pick-plus
+
 因上述渊源，本项目依 GPL-3.0 发布。]]
 or
 [[Makes almost everything pick quickly -- with NO prefab whitelist.
@@ -72,11 +80,20 @@ Upstream of that: Quick Pick by 辣椒小皇纸 (workshop 2921270365).
 
 New here: the "no whitelist" design -- tagging the pickable/searchable
 components themselves via AddComponentPostInit, so nothing has to be listed.
+
+How this is made: developed with AI assistance -- the author sets the
+direction and makes the calls, AI does most of the investigation,
+implementation and testing. The author's focus is reviving old /
+long-unmaintained mods: understand how they worked, then build a version
+that keeps up with game updates and covers more. Everything is open-sourced
+where possible, under GPL-3.0 (or the upstream licence).
+Source: https://github.com/dawei233/dst-mod-quick-pick-plus
+
 Released under GPL-3.0, same as both upstream projects.]]
 
 author = "dawei233"
 version = "2.0.0"
-forumthread = ""
+forumthread = "https://github.com/dawei233/dst-mod-quick-pick-plus"
 
 api_version = 10
 
