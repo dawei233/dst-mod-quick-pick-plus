@@ -117,8 +117,9 @@ dst_compatible = true
 dont_starve_compatible = false
 reign_of_giants_compatible = false
 
--- 客户端也要生效（动作状态由客户端预测），但本地 mod 不便强制别人装
-all_clients_require_mod = false
+-- 客户端也要生效（动作状态由客户端预测）：不装的客户端动作会先播慢动画再瞬移，
+-- 且收不到 v2.1.0 的配置同步。与上游 Quick Pick+ 一致，设为强制安装。
+all_clients_require_mod = true
 client_only_mod = false
 
 server_filter_tags = { "Quick Pick", "utility", "tweak" }
