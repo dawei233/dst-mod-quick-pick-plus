@@ -92,7 +92,7 @@ Source: https://github.com/dawei233/dst-mod-quick-pick-plus
 Released under GPL-3.0, same as both upstream projects.]]
 
 author = "dawei233"
-version = "2.0.0"
+version = "2.1.0"
 forumthread = "https://github.com/dawei233/dst-mod-quick-pick-plus"
 
 api_version = 10
@@ -171,8 +171,9 @@ configuration_options = {
     },
     {
         name = "quick_eat",
-        label = Lg and "快速进食" or "Quick eat",
-        hover = Lg and "吃肉等「慢吃」食物时也要等一段长动画，开启后和吃浆果一样快。" or "Meats and other slow foods normally play the long eating animation; make them as fast as berries.",
+        label = Lg and "快速进食（保留双手吃动画）" or "Quick eat (keeps the two-handed animation)",
+        hover = Lg and "把进食动画加速播放（约 3 倍速），吃完明显更快。\n双手吃、咀嚼、收尾的擦嘴动作**完整保留** —— 只是整体播得快一些。"
+                     or "Speeds up the eating animation playback (~3x) so eating feels much faster.\nThe two-handed hold, chewing and the mouth-wipe finish are all kept intact -- it just plays faster.",
         options = boolean_option,
         default = true,
     },

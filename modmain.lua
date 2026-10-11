@@ -234,15 +234,163 @@ local function RuleTend(state, inst, act)
     return SLOW[state] and SHORT or nil
 end
 
--- ---- EAT：慢吃升级成快吃 --------------------------------------------
-local function RuleEat(state, inst, act)
-    if state == "eat" then
-        return "quickeat"
+-- =====================================================================
+--  【快速进食：加速播放 eat 动画，而不是换成 quickeat】
+--      ⚠️ v2.0.0 曾经把 deststate 从 eat 直接改成 quickeat，结果吃肉动画坏了：
+--      变成单手小口、张嘴不动、也没有收尾的擦嘴动作。
+--      原因：**eat 与 quickeat 是两套不同的动画，不是"快慢"之分**
+--        SGwilson.lua:6338-6339   eat      → PlayAnimation("eat_pre")
+--                                             PushAnimation("eat", false)      双手
+--        SGwilson.lua:6448-6449   quickeat → PlayAnimation("quick_eat_pre")
+--                                             PushAnimation("quick_eat", false) 单手小口
+--      「擦嘴」不是独立状态（全状态图都没有），而是 eat 动画自身后段的帧 ——
+--      eat 的 onexit 只是 GoToState(queued_post_eat_state or "idle")（:6392）。
+--      ⇒ 换状态 = 换动画 = 丢掉双手和擦嘴。
+--
+--      正确做法：**保持 eat 状态与 eat 动画，只把动画播放调快**。
+--      AnimState:SetDeltaTimeMultiplier(m) 是本体自己在用的 API
+--      （SGtentacle_arm.lua:91/113/174/196、SGbrightmare_gestalt.lua:352、
+--        wormwood_vined_debuff.lua:79、mosquitobomb.lua:254 …），
+--      它是**实体级**的动画播放倍率。
+--
+--      为什么这样能同时缩短"实际等待时间"：
+--        eat 状态的 timeline 里那 6 个事件（FrameEvent(6)/TimeEvent(28帧)/
+--        TimeEvent(30帧)/FrameEvent(52)/TimeEvent(70帧)/FrameEvent(94)）
+--        **都不负责退出状态**，只是副作用。
+--        真正的退出在 events 里（:6390-6393）：
+--            EventHandler("animqueueover", function(inst)
+--                if inst.AnimState:AnimDone() then
+--                    inst.sg:GoToState(... or "idle")
+--            end)
+--        ⇒ 动画一播完就 animqueueover → 跳 idle。
+--        **状态实际时长由动画长度决定**，所以调快动画 = 调快整个进食。
+--        EAT_SPEED = 3 时约 94/3 ≈ 31 帧 ≈ 1.0 秒（quickeat 是 21 帧 0.70s），
+--        而双手吃、咀嚼、收尾擦嘴**一帧不少**。
+--
+--      ⚠️ 两个必须处理的坑：
+--      (1) onexit 必须把倍率复位成 1。SetDeltaTimeMultiplier 挂在实体上，
+--          不随状态退出自动还原（本体也是成对写：SGbrightmare_gestalt.lua:352
+--          设 2 → :368 的 onexit 复位 1）。漏掉的话，吃完饭之后**走路 / 采集 /
+--          砍树 / 睡觉全部变成 N 倍速**。
+--      (2) 客户端图要一起改。服务端 eat 播 eat→eat，客户端
+--          SGwilson_client.lua:2871-2872 播 eat_pre→**eat_lag**（预测用）。
+--          只改服务端会出现「客户端还在慢慢嚼、服务端早吃完」的抖动。
+--          客户端 eat/float_eat 是纯预测态（靠 SetTimeout(TIMEOUT) 退出、
+--          没有 onexit），所以改它的 **onenter + onupdate**，onupdate 里
+--          一旦已经不在 eat 状态就复位。
+-- =====================================================================
+
+local EAT_SPEED = 3      -- 动画播放倍率；3 ≈ 1.0 秒，接近本体 quickeat 的 0.70s
+
+-- ⚠️ 这里**故意不用弱表**（__mode = "k"）。弱表看起来更"干净"，但会引入一个
+--    极隐蔽的失败：实体被 GC 回收后键消失，若此时恰好需要复位就会跳过
+--    SetDeltaTimeMultiplier(1)，倍率**永久留在身上** ⇒ 之后走路/采集/砍树全变快移。
+--    而这张表在"倍率未复位"的期间最多只有一个实体（eat 是 busy 独占动作），
+--    复位后立刻删键，**内存占用可忽略**，没有用弱表的必要。
+--    用强表换来的是"复位永远不会因为 GC 而漏掉"。
+local eat_speed_set = GLOBAL.setmetatable({}, {})
+
+local function SetEatSpeed(inst, on)
+    local anim = inst ~= nil and inst.AnimState or nil
+    if anim == nil or anim.SetDeltaTimeMultiplier == nil then
+        return
     end
-    if state == "float_eat" then
-        return "float_quickeat"
+    if on then
+        anim:SetDeltaTimeMultiplier(EAT_SPEED)
+        eat_speed_set[inst] = true
+    elseif eat_speed_set[inst] then
+        anim:SetDeltaTimeMultiplier(1)
+        eat_speed_set[inst] = nil
     end
-    return nil
+end
+
+-- 服务端：包 eat / float_eat 的 onenter（设倍率）与 onexit（复位）
+local function PatchEatState(sg, name)
+    local st = sg ~= nil and sg.states ~= nil and sg.states[name] or nil
+    if st == nil then
+        return false
+    end
+    local oldenter = st.onenter
+    local oldexit  = st.onexit
+
+    st.onenter = function(inst, ...)
+        if oldenter ~= nil then
+            oldenter(inst, ...)
+        end
+        SetEatSpeed(inst, true)
+    end
+
+    st.onexit = function(inst, ...)
+        SetEatSpeed(inst, false)
+        if oldexit ~= nil then
+            oldexit(inst, ...)
+        end
+    end
+    return true
+end
+
+-- 客户端：eat 是纯预测态（靠 SetTimeout(TIMEOUT) 退出，**没有 onexit**），
+-- 所以用 onupdate 兜底复位。但 onupdate 只在"事件驱动"时跑，客户端若因为
+-- 服务端纠正而静默跳转，可能一帧都不调 —— 因此**再叠一个 SetTimeout 自愈**。
+-- 两条路任一生效即可复位，宁可多重置也不能漏（漏了 = 之后全程倍速）。
+local function PatchEatStateClient(sg, name)
+    local st = sg ~= nil and sg.states ~= nil and sg.states[name] or nil
+    if st == nil then
+        return false
+    end
+    local oldenter  = st.onenter
+    local oldupdate = st.onupdate
+
+    st.onenter = function(inst, ...)
+        if oldenter ~= nil then
+            oldenter(inst, ...)
+        end
+        SetEatSpeed(inst, true)
+        -- 自愈定时器：即使 onupdate 一次都没跑，也一定会复位
+        if inst.sg ~= nil and inst.sg.SetTimeout ~= nil then
+            inst.sg:SetTimeout(EAT_SPEED * 1.5, function()
+                SetEatSpeed(inst, false)
+            end)
+        else
+            -- 兜底：连 SetTimeout 都没有时，挂一个自愈定时器（本体里 SetTimeout
+            -- 是 sg 的方法，正常一定有；这里只是防止 mod 加载顺序异常时漏复位）
+            if inst.DoTaskInTime ~= nil then
+                inst:DoTaskInTime(EAT_SPEED * 0.5, function()
+                    SetEatSpeed(inst, false)
+                end)
+            end
+        end
+    end
+
+    if oldupdate ~= nil then
+        st.onupdate = function(inst, ...)
+            oldupdate(inst, ...)
+            -- 本状态已不在栈上 ⇒ 已跳转走（GoToState / timeout / 服务端纠正）
+            local cur = inst.sg ~= nil and inst.sg.currentstate or nil
+            if cur == nil or cur.name ~= name then
+                SetEatSpeed(inst, false)
+            end
+        end
+    end
+    return true
+end
+
+-- 终极兜底：任何一口吃完都会经过 idle，在它的 onenter 里无条件复位。
+-- 这样即使 onupdate 没跑、SetTimeout 也失效（改状态时被取消），
+-- 倍率仍然一定会被还原 —— 代价只是多吃一次 SetDeltaTimeMultiplier(1)（无害）。
+local function ResetOnIdle(sg, name)
+    local st = sg ~= nil and sg.states ~= nil and sg.states[name] or nil
+    if st == nil then
+        return false
+    end
+    local oldenter = st.onenter
+    st.onenter = function(inst, ...)
+        SetEatSpeed(inst, false)
+        if oldenter ~= nil then
+            oldenter(inst, ...)
+        end
+    end
+    return true
 end
 
 -- ---- TAKEITEM / TAKESINGLEITEM：只对食人花 ---------------------------
@@ -276,17 +424,31 @@ local function ApplyToSG(sg)
         Patch(sg, ACTIONS.INTERACT_WITH, RuleTend)
         Patch(sg, ACTIONS.PLANTSOIL, RuleSlow)
     end
-    if QuickEat then
-        Patch(sg, ACTIONS.EAT, RuleEat)
-    end
     if LureTake then
         Patch(sg, ACTIONS.TAKEITEM, RuleTake)
         Patch(sg, ACTIONS.TAKESINGLEITEM, RuleTake)
     end
 end
 
-AddStategraphPostInit("wilson", ApplyToSG)          -- 服务端权威
-AddStategraphPostInit("wilson_client", ApplyToSG)   -- 客户端预测
+AddStategraphPostInit("wilson", function(sg)
+    ApplyToSG(sg)
+    -- 快速进食：服务端权威图。eat / float_eat 的 onexit 会复位倍率
+    if QuickEat then
+        PatchEatState(sg, "eat")
+        PatchEatState(sg, "float_eat")
+    end
+end)
+
+AddStategraphPostInit("wilson_client", function(sg)
+    ApplyToSG(sg)
+    -- 客户端预测图：播的是 eat_lag，必须同步提速，否则和服务端不同步
+    if QuickEat then
+        PatchEatStateClient(sg, "eat")
+        PatchEatStateClient(sg, "float_eat")
+        -- 兜底：idle 时无条件复位（eat 结束后必经 idle）
+        ResetOnIdle(sg, "idle")
+    end
+end)
 
 -- ---------------------------------------------------------------
 -- 骑乘解锁：本体没给这两个动作 mount_valid，骑乘时选项根本不出现
@@ -315,6 +477,7 @@ end
 -- ---------------------------------------------------------------
 -- 加载自检
 -- ---------------------------------------------------------------
-log("v2.0.0 已加载（采集=%s 摇晃也快=%s 翻找=%s 收割=%s 篝火烤=%s 骑乘=%s 种植/对话=%s 进食=%s 食人花=%s）",
+log("v2.1.0 已加载（采集=%s 摇晃也快=%s 翻找=%s 收割=%s 篝火烤=%s 骑乘=%s 种植/对话=%s 进食=%s@%dx 食人花=%s）",
     tostring(QuickPick), tostring(ClearJostle), tostring(QuickSearch), tostring(QuickHarvest),
-    tostring(QuickCook), tostring(QuickRiding), tostring(QuickInteract), tostring(QuickEat), tostring(LureTake))
+    tostring(QuickCook), tostring(QuickRiding), tostring(QuickInteract),
+    tostring(QuickEat), tostring(EAT_SPEED), tostring(LureTake))

@@ -182,11 +182,79 @@ function mkEnt(tags, riding, opts)
         for _, t in ipairs({...}) do if self.tags[t] then return true end end
         return false
     end
+    -- edible 组件会打 edible_<foodtype> 标签（components/edible.lua:15）
+    if opts.foodtype ~= nil then
+        e.components.edible = { foodtype = opts.foodtype }
+        e:AddTag("edible_"..opts.foodtype)
+    end
+    -- 服务端判漂浮看 sg:HasStateTag("floating")（SGwilson.lua:1192），
+    -- 客户端看 replica.inventory:IsFloaterHeld()（SGwilson_client.lua:522）—— 依据不同
+    local _fl = opts.floater == true
+    e.sg = { HasStateTag = function(self, t) return _fl and t == "floating" end }
+    e.replica.inventory = { IsFloaterHeld = function() return _fl end }
+    -- ===== AnimState 桩：忠实还原「倍率是**实体级**、不随状态退出自动复位」=====
+    -- 这是 v2.1.0 的关键：如果桩不复原这一点，就测不出"漏了复位 ⇒ 之后全程倍速"
+    e.anim = { current = nil, queued = nil, mult = 1, log = {} }
+    e.AnimState = {
+        PlayAnimation = function(self, n)
+            e.anim.current = n
+            table.insert(e.anim.log, "play:" .. n)
+        end,
+        PushAnimation = function(self, n, loop)
+            e.anim.queued = n
+            table.insert(e.anim.log, "push:" .. n)
+        end,
+        SetDeltaTimeMultiplier = function(self, m)
+            e.anim.mult = m
+            table.insert(e.anim.log, "mult:" .. tostring(m))
+        end,
+        AnimDone = function(self) return e.anim.queued == nil end,
+    }
     if riding then
         e.components.rider = { IsRiding = function() return true end }
         e.replica.rider = e.components.rider
     end
     return e
+end
+
+-- 模拟 GoToState：onenter → (可跑 timeline/onupdate) → onexit
+function enterState(sg, inst, name)
+    local st = sg.states[name]
+    if st == nil then return false end
+    sg.currentstate = st
+    if st.onenter ~= nil then st.onenter(inst, {}) end
+    return true
+end
+
+function exitState(sg, inst)
+    local st = sg.currentstate
+    if st ~= nil and st.onexit ~= nil then st.onexit(inst, {}) end
+    sg.currentstate = nil
+end
+
+-- tickState：显式指定要跑哪个状态的 onupdate。
+-- ⚠️ 不能只读 sg.currentstate —— 客户端"离开 eat"恰恰意味着 currentstate 已经变了，
+--    那样就永远跑不到 eat 的 onupdate，测不出"离开后是否复位"。
+--    真机上 onupdate 由状态图在**当前**状态的帧里驱动，GoToState 前后各调一次；
+--    退出前那一次用的仍是 eat 的 onupdate，所以这里允许显式传入状态名。
+function tickState(sg, inst, name)
+    local st = name ~= nil and sg.states[name] or sg.currentstate
+    if st ~= nil and st.onupdate ~= nil then st.onupdate(inst, {}) end
+end
+
+-- 模拟客户端 SetTimeout：记录待触发的回调，由 fireTimeouts 手动触发
+function mkSGTimeouts(inst)
+    inst.sg_timeouts = {}
+    inst.sg.SetTimeout = function(self, t, fn)
+        table.insert(inst.sg_timeouts, fn)
+    end
+end
+
+function fireTimeouts(inst)
+    if inst.sg_timeouts == nil then return end
+    local list = inst.sg_timeouts
+    inst.sg_timeouts = {}
+    for _, fn in ipairs(list) do fn(inst, {}) end
 end
 
 -- 模拟 EntityScript:AddComponent —— 先打本体标签，再跑 ComponentPostInit
@@ -207,7 +275,7 @@ end
 
 -- ================== 假状态图（分支顺序逐行照抄本体） ==================
 function mkSG(is_client)
-    local sg = { name = is_client and "wilson_client" or "wilson", actionhandlers = {} }
+    local sg = { name = is_client and "wilson_client" or "wilson", actionhandlers = {}, states = {} }
 
     if is_client then
         -- 照抄 SGwilson_client.lua:390-426 —— 全部走 **标签**
@@ -286,11 +354,77 @@ function mkSG(is_client)
             or "dolongaction"
     end)
 
-    sg.actionhandlers[ACTIONS.EAT] = ActionHandler(ACTIONS.EAT, function(inst, action)
-        local obj = action.target or action.invobject
-        if obj ~= nil and obj:HasTag("sloweat") then return "eat" end
-        return "quickeat"
-    end)
+    -- ★ v2.0.0 的 EAT 判定是简化版（只判 sloweat），漏掉了真正决定肉类的那条分支，
+    --   于是"吃肉变单手"这个缺陷在 58 项测试里完全隐形。现在照抄本体，
+    --   并且**服务端看组件 foodtype、客户端看标签 edible_MEAT**（依据不同，
+    --   与本体 SGwilson.lua:1189 / SGwilson_client.lua:518 一致）。
+    if is_client then
+        -- 照抄 SGwilson_client.lua:515-527（走**标签**）
+        sg.actionhandlers[ACTIONS.EAT] = ActionHandler(ACTIONS.EAT, function(inst, action)
+            local obj = action.target or action.invobject
+            if obj == nil then return end
+            local state =
+                (obj:HasTag("quickeat") and "quickeat") or
+                (obj:HasTag("sloweat") and "eat") or
+                ((obj:HasTag("edible_MEAT") and not obj:HasTag("fooddrink")) and "eat") or
+                "quickeat"
+            local inv = inst.replica ~= nil and inst.replica.inventory or nil
+            if inv ~= nil and inv.IsFloaterHeld ~= nil and inv:IsFloaterHeld() then
+                return "float_"..state
+            end
+            return state
+        end)
+    else
+        -- 照抄 SGwilson.lua:1186-1197（走**组件**）
+        sg.actionhandlers[ACTIONS.EAT] = ActionHandler(ACTIONS.EAT, function(inst, action)
+            local obj = action.target or action.invobject
+            if obj == nil then return end
+            local state =
+                (obj:HasTag("quickeat") and "quickeat") or
+                (obj:HasTag("sloweat") and "eat") or
+                ((obj.components.edible ~= nil and obj.components.edible.foodtype == "MEAT"
+                  and not obj:HasTag("fooddrink")) and "eat") or
+                "quickeat"
+            if inst.sg ~= nil and inst.sg.HasStateTag ~= nil and inst.sg:HasStateTag("floating") then
+                return "float_"..state
+            end
+            return state
+        end)
+    end
+
+    -- ===== 状态表：v2.1.0 起要包 eat / float_eat 的 onenter·onexit·onupdate =====
+    -- 动画与时长的对应关系照抄本体：
+    --   服务端 eat      (:6338-6339)  eat_pre → eat        双手，约 94 帧
+    --   服务端 quickeat (:6448-6449)  quick_eat_pre → quick_eat   单手，约 21 帧
+    --   客户端 eat      (:2871-2872)  eat_pre → eat_lag    预测用
+    -- 退出条件：events 里的 animqueueover + AnimDone（:6390-6393）——
+    --   timeline 上那 6 个事件都不负责退出，**状态实际时长由动画长度决定**。
+    --   这正是「SetDeltaTimeMultiplier 能同时加快动画和等待」的根据。
+    local function mkState(name, anims, has_onexit, has_onupdate)
+        local st = { name = name }
+        st.anims = anims
+        st.onenter = function(inst)
+            inst.AnimState:PlayAnimation(anims[1])
+            inst.AnimState:PushAnimation(anims[2], false)
+        end
+        if has_onexit then st.onexit = function(inst) end end
+        if has_onupdate then st.onupdate = function(inst) end end
+        sg.states[name] = st
+        return st
+    end
+    if is_client then
+        mkState("eat",         { "eat_pre", "eat_lag" },         false, true)
+        mkState("quickeat",    { "quick_eat_pre", "quick_eat_lag" }, false, true)
+        mkState("float_eat",   { "float_eat_pre", "float_eat_lag" }, false, true)
+    else
+        mkState("eat",         { "eat_pre", "eat" },             true, false)
+        mkState("quickeat",    { "quick_eat_pre", "quick_eat" }, true, false)
+        mkState("float_eat",   { "float_eat_pre", "float_eat" }, true, false)
+        mkState("float_quickeat", { "float_quick_eat_pre", "float_quick_eat" }, true, false)
+    end
+    -- idle 两张图都有；v2.1.0 用它做「吃完必然复位」的兜底
+    mkState("idle", { "idle", "idle" }, true, true)
+    sg.currentstate = nil
 
     local function takeHandler(inst, action)
         return (action.target ~= nil and action.target:HasTag("inventoryitemholder_take") and "domediumaction")
@@ -402,8 +536,15 @@ E_FLOTSAM = mkEnt({}, false)
 addComp(E_FLOTSAM, "searchable", { quicksearch = false, jostlesearch = false }, false)
 
 -- 慢吃的肉 / 快吃的浆果
-E_MEAT  = mkEnt({ sloweat = true }, false)
-E_BERRYFOOD = mkEnt({}, false)
+-- ★ v2.1.0：食物实体补全。原先只有 sloweat / 素食两种，
+--   恰恰漏掉了「foodtype = MEAT」这一类 —— 而这正是线上被投诉的那一类。
+E_MEATBALL = mkEnt({ meat = true }, false, { foodtype = "MEAT" })   -- 肉丸
+E_BACON    = mkEnt({ meat = true }, false, { foodtype = "MEAT" })   -- 培根煎蛋
+E_SLOWEAT  = mkEnt({ sloweat = true }, false)                       -- 显式 sloweat 标签
+E_BERRYFOOD = mkEnt({}, false, { foodtype = "BERRY" })              -- 浆果
+E_EGGNOG   = mkEnt({ meat = true, fooddrink = true }, false, { foodtype = "MEAT" })
+E_MEAT_FLOAT = mkEnt({ meat = true }, false, { foodtype = "MEAT", floater = true })
+P_FLOAT    = mkEnt({}, false, { floater = true })
 
 -- 食人花（要模拟它走了 PrefabPostInit，才会拿到 TAKE_FAST_TAG）
 E_LURE = mkEnt({ inventoryitemholder_take = true }, false)
@@ -516,10 +657,110 @@ show("★ 普通 INTERACT_WITH 目标：不该被升级",
      "实际=%s" % act("SRV", "INTERACT_WITH", "P", "E_SAPLING"))
 show("播种：dolongaction → doshortaction",
      act("SRV", "PLANTSOIL", "P") == "doshortaction")
-show("慢吃肉：eat → quickeat",
-     act("SRV", "EAT", "P", "E_MEAT") == "quickeat")
-show("快吃浆果：quickeat 不变",
+# --- EAT：v2.1.0 起**不换状态**，改为加速 eat 动画 ---------------------
+# v2.0.0 把 deststate 从 eat 改成 quickeat → 吃肉变单手小口、张嘴不动、
+#   没有收尾擦嘴。根因：eat 与 quickeat 是**两套不同动画**，不是快慢之分
+#   （eat 播 eat_pre→eat 双手；quickeat 播 quick_eat_pre→quick_eat 单手）。
+#   「擦嘴」不是独立状态（全图都没有），是 eat 动画自身后段的帧，
+#   eat 的 onexit 只是 GoToState(queued_post_eat_state or "idle")（:6392）。
+# v2.1.0 改为：保持 eat 状态与 eat 动画，用 AnimState:SetDeltaTimeMultiplier
+#   加速播放。能同时缩短实际等待，因为 eat 的真正退出条件是
+#   events 里的 animqueueover + AnimDone（:6390-6393）——
+#   timeline 上那 6 个事件都不负责退出，**状态时长由动画长度决定**。
+print("\n[D2] EAT —— 保持 eat 状态，靠动画加速")
+for _nm, _e in [("肉丸", "E_MEATBALL"), ("培根煎蛋", "E_BACON"), ("sloweat 标签", "E_SLOWEAT")]:
+    show("★ %s 的 deststate 仍是 eat（没被换成 quickeat）" % _nm,
+         act("SRV", "EAT", "P", _e) == "eat", "实际=%s" % act("SRV", "EAT", "P", _e))
+show("★ 浆果仍是 quickeat（本来就不用动）",
      act("SRV", "EAT", "P", "E_BERRYFOOD") == "quickeat")
+show("★ 蛋酒（唯一肉饮）仍是 quickeat",
+     act("SRV", "EAT", "P", "E_EGGNOG") == "quickeat")
+show("★ 漂浮吃肉仍是 float_eat",
+     act("SRV", "EAT", "P_FLOAT", "E_MEAT_FLOAT") == "float_eat",
+     "实际=%s" % act("SRV", "EAT", "P_FLOAT", "E_MEAT_FLOAT"))
+
+# --- 关键：动画与倍率的实际行为 ---------------------------------------
+L.execute("""
+-- 服务端：进 eat → 倍率被设上、动画仍是 eat（双手）
+enterState(SRV, P, "eat")
+SRV_SEQ = {}
+for i, v in ipairs(P.anim.log) do SRV_SEQ[i] = v end
+SRV_MULT_ENTER = P.anim.mult
+-- 退出 eat → 倍率必须复位为 1
+exitState(SRV, P)
+SRV_MULT_EXIT = P.anim.mult
+""")
+_seq = L.eval("table.concat(SRV_SEQ, ' ')")
+show("★ 进 eat 后动画仍是 eat_pre → eat（**没被换成 quick_eat**）",
+     "play:eat_pre" in _seq and "push:eat" in _seq and "quick_eat" not in _seq, _seq)
+show("★ 进 eat 时倍率被设为 EAT_SPEED（>1）",
+     L.eval("SRV_MULT_ENTER") > 1, "=%s" % L.eval("SRV_MULT_ENTER"))
+show("★★ 退出 eat 后倍率复位为 1（否则之后全程倍速）",
+     L.eval("SRV_MULT_EXIT") == 1, "=%s" % L.eval("SRV_MULT_EXIT"))
+
+# 客户端：同样要提速，并且**三条退出路径都能复位**
+# ⚠️ 每条路径用**各自独立的实体** —— SetEatSpeed 靠 eat_speed_set[inst] 判定，
+#    共用同一个实体会让后一条路径"继承"前一条的已复位状态，测不出真实问题。
+# ⚠️ SetTimeout 必须挂在真实的 sg（CLI）上：inst.sg 就是 CLI。
+L.execute("""
+CLI.timeouts = {}
+CLI.SetTimeout = function(self, t, fn) table.insert(CLI.timeouts, fn) end
+
+local function freshClient()
+    local p = mkEnt({}, false); p.sg = CLI
+    CLI.currentstate = CLI.states.eat
+    CLI.states.eat.onenter(p, {})
+    return p
+end
+
+-- 顺带记一条动画序列 + 确认排了自愈定时器
+PC0 = freshClient()
+CLI_SEQ = {}
+for i, v in ipairs(PC0.anim.log) do CLI_SEQ[i] = v end
+CLI_MULT_ENTER = PC0.anim.mult
+CLI_TO_QUEUED  = #CLI.timeouts
+
+-- 路径 ①：GoToState 跳走 → onupdate 发现 currentstate 不再是 eat
+PC1 = freshClient()
+CLI.currentstate = nil
+tickState(CLI, PC1, "eat")          -- 退出前那一次仍是 eat 的 onupdate
+CLI_MULT_BY_UPDATE = PC1.anim.mult
+
+-- 路径 ②：SetTimeout 到点（onupdate 一直没跑的那种情况）
+PC2 = freshClient()
+local list = CLI.timeouts; CLI.timeouts = {}
+for _, fn in ipairs(list) do fn(PC2, {}) end
+CLI_MULT_BY_TIMEOUT = PC2.anim.mult
+
+-- 路径 ③：idle 兜底（终极保险）
+PC3 = freshClient()
+enterState(CLI, PC3, "idle")
+CLI_MULT_BY_IDLE = PC3.anim.mult
+""")
+_cseq = L.eval("table.concat(CLI_SEQ, ' ')")
+show("★ 客户端 eat 播的是 eat_lag 且也被提速",
+     "push:eat_lag" in _cseq and L.eval("CLI_MULT_ENTER") > 1, _cseq)
+show("★ 客户端确实排了自愈 SetTimeout",
+     L.eval("CLI_TO_QUEUED") >= 1, "排了 %s 个" % L.eval("CLI_TO_QUEUED"))
+show("★★ 客户端路径①：GoToState 后 onupdate 复位",
+     L.eval("CLI_MULT_BY_UPDATE") == 1, "=%s" % L.eval("CLI_MULT_BY_UPDATE"))
+show("★★ 客户端路径②：SetTimeout 复位（onupdate 没跑的情况）",
+     L.eval("CLI_MULT_BY_TIMEOUT") == 1, "=%s" % L.eval("CLI_MULT_BY_TIMEOUT"))
+show("★★ 客户端路径③：idle 兜底复位（终极保险）",
+     L.eval("CLI_MULT_BY_IDLE") == 1, "=%s" % L.eval("CLI_MULT_BY_IDLE"))
+
+# 关掉「快速进食」时不该有任何倍率改动
+_L0 = run(dict(ALL_ON, quick_eat=False))
+_L0.execute("""
+S0 = mkSG(false); runPostInit(S0)
+P0 = mkEnt({}, false)
+E0 = mkEnt({ meat = true }, false, { foodtype = "MEAT" })
+enterState(S0, P0, "eat")
+M0 = P0.anim.mult
+exitState(S0, P0)
+""")
+show("★ 关掉「快速进食」后倍率恒为 1（完全不介入）",
+     _L0.eval("M0") == 1, "=%s" % _L0.eval("M0"))
 
 # --- TAKEITEM --------------------------------------------------------
 print("\n[E] TAKEITEM（食人花）")
