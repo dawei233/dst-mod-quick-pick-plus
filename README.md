@@ -104,7 +104,7 @@ end
 | `quick_cook_on_fire` | 快速在篝火上烤 |
 | `quick_riding` | 骑牛 / 骑沃比时采集、拾取、收割、取物全部同样快 |
 | `quick_plant_interact` | 快速播种，以及和农场植物对话 |
-| `quick_eat` | 快速进食 —— **动画加速播放，双手吃 + 擦嘴完整保留** |
+| `quick_eat` | 快速进食（肉等「慢吃」食物也变快） |
 | `lureplant_take` | 快速取食人花产出的肉 |
 
 > 农场作物与杂草全部走本体自带的 **`farm_plant` 标签**
@@ -114,35 +114,6 @@ end
 ---
 
 ## 更新日志
-
-**2.1.0 —— 修复「快速进食」把吃肉动画变单手**
-
-2.0.0 的快速进食把 `ACTIONS.EAT` 的 deststate 从 `eat` 改成 `quickeat`，
-结果吃肉（肉丸 / 培根煎蛋 / 生高鸟蛋 / 烤象鼻…）的动画坏了：
-原本**双手吃 + 收尾擦嘴**，变成类似吃素食的**单手小口**、人物张嘴不动、
-也没有擦嘴动作。
-
-根因不是状态选错，而是 **`eat` 与 `quickeat` 是两套不同的动画**，不是"快慢"之分：
-
-| 状态 | 动画 | 手 | 时长 |
-|---|---|---|---|
-| `eat` | `eat_pre → eat`（`SGwilson.lua:6338-6339`） | 双手 | ~94 帧 |
-| `quickeat` | `quick_eat_pre → quick_eat`（`SGwilson.lua:6448-6449`） | 单手小口（给浆果设计） | ~21 帧 |
-
-「擦嘴」不是独立状态（全状态图都没有），而是 `eat` 动画自身后段的帧 ——
-`eat` 的 `onexit` 只是 `GoToState(queued_post_eat_state or "idle")`（`:6392`），
-所以换状态必然连擦嘴一起丢。
-
-**修法：保持 `eat` 状态与 `eat` 动画，只把动画播放调快**
-（`AnimState:SetDeltaTimeMultiplier`，本体自己也在用）。之所以能同时缩短实际
-等待，是因为 `eat` 的真正退出条件是 `events` 里的
-`animqueueover` + `AnimDone`（`:6390-6393`）—— timeline 上那 6 个事件都不负责
-退出，**状态实际时长由动画长度决定**。默认 3 倍速，约 1.0 秒
-（`quickeat` 是 0.70 秒），双手吃、咀嚼、擦嘴一帧不少。
-
-三处复位保险（漏掉任何一处都会让倍率永久留在身上 ⇒ 之后走路/采集全变快移）：
-`eat` 的 `onexit`（服务端）、客户端 `onupdate` 检测到已离开 + 自愈
-`SetTimeout`、`idle` 的 `onenter` 兜底。
 
 **2.0.0**
 
