@@ -92,7 +92,7 @@ Source: https://github.com/dawei233/dst-mod-quick-pick-plus
 Released under GPL-3.0, same as both upstream projects.]]
 
 author = "dawei233"
-version = "2.1.0"
+version = "2.0.0"
 forumthread = "https://github.com/dawei233/dst-mod-quick-pick-plus"
 
 api_version = 10
@@ -166,6 +166,13 @@ configuration_options = {
         name = "quick_plant_interact",
         label = Lg and "快速种植与对话" or "Quick plant & talk to plants",
         hover = Lg and "播种，以及与农场植物对话（让它开心）的动作变快。" or "Quick planting seeds, and quick talking to farm plants.",
+        options = boolean_option,
+        default = true,
+    },
+    {
+        name = "quick_eat",
+        label = Lg and "快速进食" or "Quick eat",
+        hover = Lg and "吃肉等「慢吃」食物时也要等一段长动画，开启后和吃浆果一样快。" or "Meats and other slow foods normally play the long eating animation; make them as fast as berries.",
         options = boolean_option,
         default = true,
     },

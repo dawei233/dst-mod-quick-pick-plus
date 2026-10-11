@@ -1,5 +1,5 @@
 --=====================================================================
---  Quick Pick Plus · 快速采集（通用版）  v2.1.0
+--  Quick Pick Plus · 快速采集（通用版）  v2.0.0
 --  Copyright (C) 2026 dawei233
 --
 --  本程序为自由软件：你可以依据 GNU 通用公共许可证（GPL）的条款 ——
@@ -93,6 +93,7 @@ local QuickHarvest  = GetModConfigData("quick_harvest")
 local QuickCook     = GetModConfigData("quick_cook_on_fire")
 local QuickRiding   = GetModConfigData("quick_riding")
 local QuickInteract = GetModConfigData("quick_plant_interact")
+local QuickEat      = GetModConfigData("quick_eat")
 local LureTake      = GetModConfigData("lureplant_take")
 
 -- ---------------------------------------------------------------
@@ -233,6 +234,17 @@ local function RuleTend(state, inst, act)
     return SLOW[state] and SHORT or nil
 end
 
+-- ---- EAT：慢吃升级成快吃 --------------------------------------------
+local function RuleEat(state, inst, act)
+    if state == "eat" then
+        return "quickeat"
+    end
+    if state == "float_eat" then
+        return "float_quickeat"
+    end
+    return nil
+end
+
 -- ---- TAKEITEM / TAKESINGLEITEM：只对食人花 ---------------------------
 local function RuleTake(state, inst, act)
     if act == nil or act.target == nil or act.target:HasTag("noquickpick") then
@@ -264,6 +276,9 @@ local function ApplyToSG(sg)
         Patch(sg, ACTIONS.INTERACT_WITH, RuleTend)
         Patch(sg, ACTIONS.PLANTSOIL, RuleSlow)
     end
+    if QuickEat then
+        Patch(sg, ACTIONS.EAT, RuleEat)
+    end
     if LureTake then
         Patch(sg, ACTIONS.TAKEITEM, RuleTake)
         Patch(sg, ACTIONS.TAKESINGLEITEM, RuleTake)
@@ -272,30 +287,6 @@ end
 
 AddStategraphPostInit("wilson", ApplyToSG)          -- 服务端权威
 AddStategraphPostInit("wilson_client", ApplyToSG)   -- 客户端预测
-
--- =====================================================================
---  【刻意不碰 EAT —— 进食动画不是"慢动作"，是另一套动画资产】
---      v2.0.0 曾有过「快速进食」选项（把 deststate 从 eat 改成 quickeat），
---      结果吃肉时人物变成单手小口、张嘴不动、也没有收尾的擦嘴动作。
---      原因不是状态选错了，而是 **`eat` 与 `quickeat` 是两套不同的动画**：
---        SGwilson.lua:6338-6339   eat       → PlayAnimation("eat_pre")
---                                             PushAnimation("eat", false)
---        SGwilson.lua:6448-6449   quickeat  → PlayAnimation("quick_eat_pre")
---                                             PushAnimation("quick_eat", false)
---      `quick_eat` 是本体为**浆果 / 果子**设计的小口快速动作；
---      双手吃 + 收尾擦嘴是 `eat` 动画自身后段的帧，**不是一个独立状态**
---      （eat 的 onexit 只是 GoToState(queued_post_eat_state or "idle")，
---        见 SGwilson.lua:6392 —— 全图没有独立的"擦嘴"状态）。
---      ⇒ 换状态 = 换动画 = 丢掉双手和擦嘴。两者不可互换。
---
---      时长差只是顺带的收益（eat ~94 帧 vs quickeat ~21 帧），
---      代价却是整套进食表现被降级，不划算。**保持本体原样。**
---
---      若以后一定要"快速进食"，正确做法是**保留 eat 状态与动画**，
---      只压缩它的时间线，并且客户端 wilson_client 的 eat 状态
---      （含 eat_lag 预测动画，SGwilson_client.lua:2871-2872）必须同步改，
---      否则双端预测会不一致。
--- =====================================================================
 
 -- ---------------------------------------------------------------
 -- 骑乘解锁：本体没给这两个动作 mount_valid，骑乘时选项根本不出现
@@ -324,6 +315,6 @@ end
 -- ---------------------------------------------------------------
 -- 加载自检
 -- ---------------------------------------------------------------
-log("v2.1.0 已加载（采集=%s 摇晃也快=%s 翻找=%s 收割=%s 篝火烤=%s 骑乘=%s 种植/对话=%s 食人花=%s）",
+log("v2.0.0 已加载（采集=%s 摇晃也快=%s 翻找=%s 收割=%s 篝火烤=%s 骑乘=%s 种植/对话=%s 进食=%s 食人花=%s）",
     tostring(QuickPick), tostring(ClearJostle), tostring(QuickSearch), tostring(QuickHarvest),
-    tostring(QuickCook), tostring(QuickRiding), tostring(QuickInteract), tostring(LureTake))
+    tostring(QuickCook), tostring(QuickRiding), tostring(QuickInteract), tostring(QuickEat), tostring(LureTake))
