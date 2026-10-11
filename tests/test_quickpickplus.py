@@ -182,6 +182,16 @@ function mkEnt(tags, riding, opts)
         for _, t in ipairs({...}) do if self.tags[t] then return true end end
         return false
     end
+    -- edible 组件会打 edible_<foodtype> 标签（components/edible.lua:15）
+    if opts.foodtype ~= nil then
+        e.components.edible = { foodtype = opts.foodtype }
+        e:AddTag("edible_"..opts.foodtype)
+    end
+    -- 漂浮进食：服务端看 sg:HasStateTag("floating")（SGwilson.lua:1192），
+    -- 客户端看 replica.inventory:IsFloaterHeld()（SGwilson_client.lua:522）—— 依据不同
+    local _fl = opts.floater == true
+    e.sg = { HasStateTag = function(self, t) return _fl and t == "floating" end }
+    e.replica.inventory = { IsFloaterHeld = function() return _fl end }
     if riding then
         e.components.rider = { IsRiding = function() return true end }
         e.replica.rider = e.components.rider
@@ -286,11 +296,43 @@ function mkSG(is_client)
             or "dolongaction"
     end)
 
-    sg.actionhandlers[ACTIONS.EAT] = ActionHandler(ACTIONS.EAT, function(inst, action)
-        local obj = action.target or action.invobject
-        if obj ~= nil and obj:HasTag("sloweat") then return "eat" end
-        return "quickeat"
-    end)
+    -- ★ 这段原本是简化版（只判 sloweat），漏掉了真正决定肉类的 foodtype = MEAT 分支。
+    --   照抄本体，并区分两端依据：服务端看**组件** foodtype（SGwilson.lua:1189），
+    --   客户端看**标签** edible_MEAT（SGwilson_client.lua:518，edible.lua:15 会 AddTag）。
+    --   漏掉 MEAT 分支的后果很严重：肉类根本测不到，等于这块没有回归保护。
+    if is_client then
+        -- 照抄 SGwilson_client.lua:515-527（走标签）
+        sg.actionhandlers[ACTIONS.EAT] = ActionHandler(ACTIONS.EAT, function(inst, action)
+            local obj = action.target or action.invobject
+            if obj == nil then return end
+            local state =
+                (obj:HasTag("quickeat") and "quickeat") or
+                (obj:HasTag("sloweat") and "eat") or
+                ((obj:HasTag("edible_MEAT") and not obj:HasTag("fooddrink")) and "eat") or
+                "quickeat"
+            local inv = inst.replica ~= nil and inst.replica.inventory or nil
+            if inv ~= nil and inv.IsFloaterHeld ~= nil and inv:IsFloaterHeld() then
+                return "float_"..state
+            end
+            return state
+        end)
+    else
+        -- 照抄 SGwilson.lua:1186-1197（走组件）
+        sg.actionhandlers[ACTIONS.EAT] = ActionHandler(ACTIONS.EAT, function(inst, action)
+            local obj = action.target or action.invobject
+            if obj == nil then return end
+            local state =
+                (obj:HasTag("quickeat") and "quickeat") or
+                (obj:HasTag("sloweat") and "eat") or
+                ((obj.components.edible ~= nil and obj.components.edible.foodtype == "MEAT"
+                  and not obj:HasTag("fooddrink")) and "eat") or
+                "quickeat"
+            if inst.sg ~= nil and inst.sg.HasStateTag ~= nil and inst.sg:HasStateTag("floating") then
+                return "float_"..state
+            end
+            return state
+        end)
+    end
 
     local function takeHandler(inst, action)
         return (action.target ~= nil and action.target:HasTag("inventoryitemholder_take") and "domediumaction")
@@ -516,10 +558,43 @@ show("★ 普通 INTERACT_WITH 目标：不该被升级",
      "实际=%s" % act("SRV", "INTERACT_WITH", "P", "E_SAPLING"))
 show("播种：dolongaction → doshortaction",
      act("SRV", "PLANTSOIL", "P") == "doshortaction")
-show("慢吃肉：eat → quickeat",
+show("★ 开启时：慢吃肉 eat → quickeat（和吃素食一样快）",
      act("SRV", "EAT", "P", "E_MEAT") == "quickeat")
-show("快吃浆果：quickeat 不变",
+show("★ 快吃浆果：quickeat 不变",
      act("SRV", "EAT", "P", "E_BERRYFOOD") == "quickeat")
+
+# --- D2: 关闭时必须**完全不碰** EAT，且双端一致 -----------------------
+# 这是用户真正的诉求：「关闭快速进食后，吃肉动画要正常」。
+# 双端一致尤其重要：DST 的动作状态由客户端预测、服务端权威，两边必须算出
+# 同一个状态，否则会出现「客户端还在慢慢嚼、服务端早吃完」的错乱。
+print("\n[D2] EAT —— 关闭快速进食时完全不碰，且双端一致")
+_Loff = run(dict(ALL_ON, quick_eat=False))
+_Loff.execute(r"""
+S = mkSG(false); runPostInit(S)
+C = mkSG(true);  runPostInit(C)
+-- 各色食物（meat=食物类型标签，foodtype=edible 组件的 foodtype）
+E_MEATBALL = mkEnt({ meat = true }, false, { foodtype = "MEAT" })
+E_BACON    = mkEnt({ meat = true }, false, { foodtype = "MEAT" })
+E_SLOWEAT  = mkEnt({ sloweat = true }, false)
+E_BERRY    = mkEnt({}, false, { foodtype = "BERRY" })
+E_EGGNOG   = mkEnt({ meat = true, fooddrink = true }, false, { foodtype = "MEAT" })
+E_MEATF    = mkEnt({ meat = true }, false, { foodtype = "MEAT", floater = true })
+PF         = mkEnt({}, false, { floater = true })
+Pp         = mkEnt({}, false)
+""")
+for _nm, _e, _inst in [("肉丸", "E_MEATBALL", "Pp"), ("培根煎蛋", "E_BACON", "Pp"),
+                       ("sloweat 标签", "E_SLOWEAT", "Pp"),
+                       ("浆果", "E_BERRY", "Pp"), ("蛋酒(肉饮)", "E_EGGNOG", "Pp"),
+                       ("漂浮吃肉", "E_MEATF", "PF")]:
+    _s = _Loff.eval('dest(S, ACTIONS.EAT, %s, { target = %s })' % (_inst, _e))
+    _c = _Loff.eval('dest(C, ACTIONS.EAT, %s, { target = %s })' % (_inst, _e))
+    # 关掉后必须与本体完全一致：肉=eat(双手吃+擦嘴)，素食/蛋酒=quickeat
+    _want = "float_eat" if _nm == "漂浮吃肉" else ("eat" if _e in ("E_MEATBALL", "E_BACON", "E_SLOWEAT") else "quickeat")
+    show("★ 关闭后 %-12s = %s（本体原样）" % (_nm, _want), _s == _want, "实际=%s" % _s)
+    show("   %-12s 服务端/客户端一致" % _nm, _s == _c, "服务端=%s 客户端=%s" % (_s, _c))
+
+show("★★ 关闭时 EAT 处理器根本没被包装（deststate 就是本体那个函数）",
+     _Loff.eval("dest(S, ACTIONS.EAT, Pp, { target = E_MEATBALL })") == "eat")
 
 # --- TAKEITEM --------------------------------------------------------
 print("\n[E] TAKEITEM（食人花）")
