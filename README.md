@@ -104,7 +104,6 @@ end
 | `quick_cook_on_fire` | 快速在篝火上烤 |
 | `quick_riding` | 骑牛 / 骑沃比时采集、拾取、收割、取物全部同样快 |
 | `quick_plant_interact` | 快速播种，以及和农场植物对话 |
-| `quick_eat` | 快速进食（肉等「慢吃」食物也变快） |
 | `lureplant_take` | 快速取食人花产出的肉 |
 
 > 农场作物与杂草全部走本体自带的 **`farm_plant` 标签**
@@ -115,6 +114,25 @@ end
 
 ## 更新日志
 
+**2.1.0**
+
+- **移除 `quick_eat`（快速进食）**，吃肉等恢复为原版的双手吃 +
+  收尾擦嘴动画。
+  - 原因：本体里 `eat` 与 `quickeat` 是**两套不同的动画**，不是"快慢"之分 ——
+    `eat` 播 `eat_pre → eat`（双手，动画后段自带擦嘴），
+    `quickeat` 播 `quick_eat_pre → quick_eat`（单手小口，给浆果果子设计）。
+    把 deststate 从 `eat` 换成 `quickeat`，等于把进食动画整个降级：
+    人物单手小口、张嘴不动、也没有收尾的擦嘴动作。
+  - 「擦嘴」并不是一个独立状态（全图都没有），而是 `eat` 动画自身后段的帧
+    —— `eat` 的 `onexit` 只是 `GoToState(queued_post_eat_state or "idle")`
+    （`SGwilson.lua:6392`）。所以换状态必然连擦嘴一起丢掉。
+  - 时长变短只是顺带的收益（`eat` ~94 帧 vs `quickeat` ~21 帧），
+    代价却是整套进食表现被降级，不划算。
+  - 其它功能一律未动。
+- 测试：把桩里简化的 EAT 判定换成照抄本体（原先只判 `sloweat`，
+  漏掉了 `foodtype = MEAT` 那条分支 —— 这正是当初没能发现此问题的原因），
+  并新增进食专项回归（含双端一致性与漂浮进食）。
+
 **2.0.0**
 
 - **重写动作升级的挂点**：改包装 `deststate`
@@ -124,7 +142,8 @@ end
 - 新增 `farm_plant` 标签覆盖：所有农场作物与杂草（含其它 mod 新增）。
 - 新增骑乘完整支持：`PICK` / `PICKUP` 提速，并给本体没标 `mount_valid`
   的 `HARVEST` / `TAKEITEM` 补上开关（否则骑乘时选项根本不出现）。
-- 新增 `quick_eat`、`lureplant_take` 两个开关。
+- 新增 `lureplant_take` 开关。（`quick_eat` 曾同批加入，
+  但因上述动画降级问题已在 2.1.0 移除。）
 
 **1.0.0** — 初版，「零白名单」思路。
 

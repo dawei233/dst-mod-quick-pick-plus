@@ -57,6 +57,23 @@ show("两个状态图都注册（服务端 + 客户端）",
 show("处理了 mount_valid（骑乘解锁 HARVEST/TAKEITEM）", "mount_valid" in _eff)
 show("致谢里写明参考来源", "Jotave" in SRC and "3739258809" in SRC and "2921270365" in SRC)
 
+# --- v2.1.0：EAT 必须彻底不碰（源码级，最直接的防线）-----------------
+show("★ 不读 quick_eat 配置项（v2.1.0 已移除）",
+     'GetModConfigData("quick_eat")' not in _eff and "QuickEat" not in _eff)
+show("★ 不 patch ACTIONS.EAT",
+     not re.search(r"Patch\s*\(\s*sg\s*,\s*ACTIONS\.EAT", _eff))
+show("★ 没有 RuleEat 之类的进食规则函数",
+     not re.search(r"local\s+function\s+Rule\w*Eat", _eff))
+show("★ 源码里出现的 quickeat 只在注释里（无实际改写）",
+     not re.search(r'return\s+"quickeat"', _eff)
+     and not re.search(r'return\s+"float_quickeat"', _eff))
+show("★ 留下了「为什么不能加速进食」的注释（防止以后重犯）",
+     "刻意不碰 EAT" in SRC and "quick_eat_pre" in SRC)
+show("★ modinfo 里也没有 quick_eat 选项了",
+     'name = "quick_eat"' not in io.open(
+         os.path.join(os.path.dirname(SRC_PATH), "modinfo.lua"),
+         encoding="utf-8").read())
+
 # 从 modmain 源码动态解析自定义标签值 —— 以后改标签名不会漏
 _m = re.search(r'local\s+FAST_TAG\s*=\s*"([^"]+)"', SRC)
 FAST_TAG = _m.group(1) if _m else "??"
@@ -160,6 +177,7 @@ end
 
 -- ================== 实体 ==================
 -- tags 同时支持两种写法：{"a","b"}（数组）与 {a=true, b=true}（哈希）
+-- 第三个参数 opts：foodtype（造 edible 组件 + edible_XX 标签）、floater（漂浮进食）
 function mkEnt(tags, riding, opts)
     opts = opts or {}
     local e = {}
@@ -182,6 +200,16 @@ function mkEnt(tags, riding, opts)
         for _, t in ipairs({...}) do if self.tags[t] then return true end end
         return false
     end
+    -- edible 组件会打 edible_<foodtype> 标签（components/edible.lua:15）
+    if opts.foodtype ~= nil then
+        e.components.edible = { foodtype = opts.foodtype }
+        e:AddTag("edible_"..opts.foodtype)
+    end
+    -- 服务端判漂浮看 sg:HasStateTag("floating")（SGwilson.lua:1192），
+    -- 客户端看 replica.inventory:IsFloaterHeld()（SGwilson_client.lua:522）—— 依据不同
+    local _fl = opts.floater == true
+    e.sg = { HasStateTag = function(self, t) return _fl and t == "floating" end }
+    e.replica.inventory = { IsFloaterHeld = function() return _fl end }
     if riding then
         e.components.rider = { IsRiding = function() return true end }
         e.replica.rider = e.components.rider
@@ -286,11 +314,43 @@ function mkSG(is_client)
             or "dolongaction"
     end)
 
-    sg.actionhandlers[ACTIONS.EAT] = ActionHandler(ACTIONS.EAT, function(inst, action)
-        local obj = action.target or action.invobject
-        if obj ~= nil and obj:HasTag("sloweat") then return "eat" end
-        return "quickeat"
-    end)
+    -- ★ v2.1.0：这一段原先是简化版（只判 sloweat），于是漏掉了 MEAT 那条分支，
+    --   "吃肉变单手"这个缺陷因此在测试里完全看不见。现在照抄本体，
+    --   并且**服务端看组件 foodtype、客户端看标签 edible_MEAT**（两者判定依据不同，
+    --   与本体 SGwilson.lua:1189 / SGwilson_client.lua:518 一致）。
+    if is_client then
+        -- 照抄 SGwilson_client.lua:515-527（走**标签**）
+        sg.actionhandlers[ACTIONS.EAT] = ActionHandler(ACTIONS.EAT, function(inst, action)
+            local obj = action.target or action.invobject
+            if obj == nil then return end
+            local state =
+                (obj:HasTag("quickeat") and "quickeat") or
+                (obj:HasTag("sloweat") and "eat") or
+                ((obj:HasTag("edible_MEAT") and not obj:HasTag("fooddrink")) and "eat") or
+                "quickeat"
+            local inv = inst.replica ~= nil and inst.replica.inventory or nil
+            if inv ~= nil and inv.IsFloaterHeld ~= nil and inv:IsFloaterHeld() then
+                return "float_"..state
+            end
+            return state
+        end)
+    else
+        -- 照抄 SGwilson.lua:1186-1197（走**组件**）
+        sg.actionhandlers[ACTIONS.EAT] = ActionHandler(ACTIONS.EAT, function(inst, action)
+            local obj = action.target or action.invobject
+            if obj == nil then return end
+            local state =
+                (obj:HasTag("quickeat") and "quickeat") or
+                (obj:HasTag("sloweat") and "eat") or
+                ((obj.components.edible ~= nil and obj.components.edible.foodtype == "MEAT"
+                  and not obj:HasTag("fooddrink")) and "eat") or
+                "quickeat"
+            if inst.sg ~= nil and inst.sg.HasStateTag ~= nil and inst.sg:HasStateTag("floating") then
+                return "float_"..state
+            end
+            return state
+        end)
+    end
 
     local function takeHandler(inst, action)
         return (action.target ~= nil and action.target:HasTag("inventoryitemholder_take") and "domediumaction")
@@ -342,7 +402,7 @@ def run(cfg):
 ALL_ON = {
     "pick_generic": True, "clear_jostle": True, "search_generic": True,
     "quick_harvest": True, "quick_cook_on_fire": True, "quick_riding": True,
-    "quick_plant_interact": True, "quick_eat": True, "lureplant_take": True,
+    "quick_plant_interact": True, "lureplant_take": True,
 }
 ALL_OFF = {k: False for k in ALL_ON}
 
@@ -401,9 +461,22 @@ P_RIDE = mkEnt({}, true)
 E_FLOTSAM = mkEnt({}, false)
 addComp(E_FLOTSAM, "searchable", { quicksearch = false, jostlesearch = false }, false)
 
--- 慢吃的肉 / 快吃的浆果
-E_MEAT  = mkEnt({ sloweat = true }, false)
-E_BERRYFOOD = mkEnt({}, false)
+-- ★ v2.1.0：食物实体补全。原先只有 sloweat / 素食两种，
+--   恰恰漏掉了「foodtype = MEAT」这一类 —— 而这正是线上被投诉的那一类。
+--   服务端读 components.edible.foodtype，客户端读 edible_MEAT 标签，
+--   mkEnt 里两个都会造（edible.lua:15 会 AddTag("edible_"..foodtype)）。
+E_MEATBALL   = mkEnt({ meat = true }, false, { foodtype = "MEAT" })   -- 肉丸
+E_BACON      = mkEnt({ meat = true }, false, { foodtype = "MEAT" })   -- 培根煎蛋
+E_TALLEGGB   = mkEnt({ meat = true }, false, { foodtype = "MEAT" })   -- 生高鸟蛋
+E_ELEPHANT   = mkEnt({ meat = true }, false, { foodtype = "MEAT" })   -- 烤象鼻
+E_SLOWEAT    = mkEnt({ sloweat = true }, false)                       -- 显式 sloweat 标签
+E_EGGNOG     = mkEnt({ meat = true, fooddrink = true }, false, { foodtype = "MEAT" })  -- 唯一的肉饮
+E_BERRYFOOD  = mkEnt({}, false, { foodtype = "BERRY" })               -- 浆果
+E_FRUIT      = mkEnt({}, false, { foodtype = "FRUIT" })               -- 火龙果
+E_QUICKEAT   = mkEnt({ quickeat = true }, false)                     -- 显式 quickeat 标签
+-- 漂浮进食（站在浮冰上拿着食物）
+E_MEAT_FLOAT = mkEnt({ meat = true }, false, { foodtype = "MEAT", floater = true })
+P_FLOAT      = mkEnt({}, false, { floater = true })
 
 -- 食人花（要模拟它走了 PrefabPostInit，才会拿到 TAKE_FAST_TAG）
 E_LURE = mkEnt({ inventoryitemholder_take = true }, false)
@@ -516,10 +589,35 @@ show("★ 普通 INTERACT_WITH 目标：不该被升级",
      "实际=%s" % act("SRV", "INTERACT_WITH", "P", "E_SAPLING"))
 show("播种：dolongaction → doshortaction",
      act("SRV", "PLANTSOIL", "P") == "doshortaction")
-show("慢吃肉：eat → quickeat",
-     act("SRV", "EAT", "P", "E_MEAT") == "quickeat")
-show("快吃浆果：quickeat 不变",
-     act("SRV", "EAT", "P", "E_BERRYFOOD") == "quickeat")
+
+# --- EAT：v2.1.0 起**完全不碰** ---------------------------------------
+# 背景：v2.0.0 有个「快速进食」选项，把 deststate 从 eat 改成 quickeat，
+#       导致吃肉变成单手小口、张嘴不动、且丢掉收尾的擦嘴动作。
+#       根因不是状态选错，而是 eat 与 quickeat 是**两套不同的动画资产**：
+#         SGwilson.lua:6338-6339  eat      → eat_pre     → eat
+#         SGwilson.lua:6448-6449  quickeat → quick_eat_pre → quick_eat
+#       「擦嘴」是 eat 动画自身后段的帧，不是独立状态（全图没有擦嘴状态，
+#       eat 的 onexit 只是 GoToState(queued_post_eat_state or "idle")，:6392）。
+#       ⇒ 换状态就是换动画。正确做法是不动它。
+print("\n[D2] EAT —— 绝不改动（v2.1.0 回归）")
+_MEATS = [
+    ("肉丸", "E_MEATBALL"), ("培根煎蛋", "E_BACON"), ("生高鸟蛋", "E_TALLEGGB"),
+    ("烤象鼻", "E_ELEPHANT"), ("sloweat 标签", "E_SLOWEAT"),
+]
+for _nm, _e in _MEATS:
+    _srv = act("SRV", "EAT", "P", _e)
+    _cli = act("CLI", "EAT", "P", _e)
+    show("★ %s 必须留在 eat（双手吃 + 擦嘴）" % _nm, _srv == "eat",
+         "服务端=%s 客户端=%s" % (_srv, _cli))
+    show("   %s 双端一致" % _nm, _srv == _cli)
+for _nm, _e in [("浆果", "E_BERRYFOOD"), ("火龙果", "E_FRUIT"),
+                ("quickeat 标签", "E_QUICKEAT"), ("蛋酒(肉饮)", "E_EGGNOG")]:
+    _srv = act("SRV", "EAT", "P", _e)
+    show("★ %s 必须留在 quickeat（不该被拉长）" % _nm, _srv == "quickeat",
+         "实际=%s" % _srv)
+show("★ 漂浮吃肉：留在 float_eat",
+     act("SRV", "EAT", "P_FLOAT", "E_MEAT_FLOAT") == "float_eat",
+     "实际=%s" % act("SRV", "EAT", "P_FLOAT", "E_MEAT_FLOAT"))
 
 # --- TAKEITEM --------------------------------------------------------
 print("\n[E] TAKEITEM（食人花）")
@@ -569,6 +667,11 @@ P0      = mkEnt({}, false)
 P0_WORM = mkEnt({ farmplantfastpicker = true }, false)
 P0_RIDE = mkEnt({}, true)
 E0_MEAT = mkEnt({ sloweat = true }, false)
+-- ★ 反测也要覆盖真正的肉类（foodtype = MEAT），v2.0.0 就是在这里漏的
+E0_MEATFOOD = mkEnt({ meat = true }, false, { foodtype = "MEAT" })
+E0_BERRYFOOD = mkEnt({}, false, { foodtype = "BERRY" })
+E0_FLOAT = mkEnt({}, false, { floater = true })
+E0_MEATFLOAT = mkEnt({ meat = true }, false, { foodtype = "MEAT", floater = true })
 E0_LURE = mkEnt({ inventoryitemholder_take = true }, false)
 E0_YOTB = mkEnt({ yotb_stage = true }, false)
 E0_TEND = mkEnt({ tendable_farmplant = true }, false)
@@ -589,6 +692,9 @@ CASES = [
     ("INTERACT_WITH", "P0", "E0_YOTB"),
     ("PLANTSOIL", "P0", "nil"),
     ("EAT", "P0", "E0_MEAT"),
+    ("EAT", "P0", "E0_MEATFOOD"),
+    ("EAT", "P0", "E0_BERRYFOOD"),
+    ("EAT", "E0_FLOAT", "E0_MEATFLOAT"),
     ("TAKEITEM", "P0", "E0_LURE"),
 ]
 
