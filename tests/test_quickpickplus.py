@@ -56,6 +56,10 @@ show("两个状态图都注册（服务端 + 客户端）",
      _eff.count('AddStategraphPostInit("wilson"') >= 1 and _eff.count('AddStategraphPostInit("wilson_client"') >= 1)
 show("处理了 mount_valid（骑乘解锁 HARVEST/TAKEITEM）", "mount_valid" in _eff)
 show("致谢里写明参考来源", "Jotave" in SRC and "3739258809" in SRC and "2921270365" in SRC)
+show("不再用加载时配置常量（都用运行时 cfg，双端可被 RPC 覆盖）",
+     not re.search(r"local\s+\w+\s*=\s*GetModConfigData", _eff))
+show("包含双端配置同步 RPC（Re'q'Cfg / 'Sync'Cfg）",
+     "ReqCfg" in SRC and "SyncCfg" in SRC)
 
 # 从 modmain 源码动态解析自定义标签值 —— 以后改标签名不会漏
 _m = re.search(r'local\s+FAST_TAG\s*=\s*"([^"]+)"', SRC)
@@ -468,7 +472,9 @@ E_HEAVY = mkEnt({ heavy = true }, false)
 def act(sg, action, inst, target=None, invobject=None):
     L.execute("__sg = %s" % sg)
     L.execute("__inst = %s" % inst)
-    L.execute("__act = { target = %s, invobject = %s }" % (target or "nil", invobject or "nil"))
+    # 真实 DST 的 bufferedaction.action 是动作对象；RuleSlow 用它区分 HARVEST/COOK 与 PLANTSOIL
+    L.execute("__act = { target = %s, invobject = %s, action = ACTIONS.%s }"
+              % (target or "nil", invobject or "nil", action))
     L.execute("__r = dest(__sg, ACTIONS.%s, __inst, __act)" % action)
     return L.globals().__r
 
@@ -740,15 +746,15 @@ show("关掉「骑乘」不影响步行采集",
 show("关掉「骑乘」后 HARVEST 不设 mount_valid",
      Lr.eval("ACTIONS.HARVEST.mount_valid") in (None, False))
 
-# 只关 pick_generic
+# 只关 pick_generic（v2.1.0 起 hook 无条件注册，是否生效改由运行时 cfg 决定）
 Lp = run({**ALL_ON, "pick_generic": False})
 Lp.execute(r"""
 SRVp = mkSG(false); runPostInit(SRVp)
 Ep_SAP = mkEnt({}, false); addComp(Ep_SAP, "pickable", { quickpick = false }, false)
 Pp = mkEnt({}, false)
 """)
-show("关掉「通用采集」后不注册 pickable 的 ComponentPostInit",
-     Lp.eval('COMP_POSTINIT["pickable"]') is None)
+show("关掉「通用采集」后普通植物不打 FAST_TAG（运行期按 cfg 判断）",
+     Lp.eval('Ep_SAP:HasTag("%s")' % FAST_TAG) == False)
 show("关掉「通用采集」后普通植物回到 dolongaction",
      Lp.eval('dest(SRVp, ACTIONS.PICK, Pp, { target = Ep_SAP })') == "dolongaction")
 
@@ -757,12 +763,16 @@ Ll = run({**ALL_ON, "lureplant_take": False})
 Ll.execute(r"""
 SRVl = mkSG(false); runPostInit(SRVl)
 El_LURE = mkEnt({ inventoryitemholder_take = true }, false)
+do
+    local fns = PREFAB_POSTINIT["lureplant"]
+    if fns ~= nil then for _, fn in ipairs(fns) do fn(El_LURE) end end
+end
 Pl = mkEnt({}, false)
 """)
 show("关掉「食人花」后 TAKEITEM 保持 domediumaction",
      Ll.eval('dest(SRVl, ACTIONS.TAKEITEM, Pl, { target = El_LURE })') == "domediumaction")
-show("关掉「食人花」后不注册 lureplant 的 PrefabPostInit",
-     Ll.eval('PREFAB_POSTINIT["lureplant"]') is None)
+show("关掉「食人花」后 lureplant 不打 TAKE_FAST_TAG",
+     Ll.eval('El_LURE:HasTag("%s")' % TAKE_TAG) == False)
 
 
 # =====================================================================

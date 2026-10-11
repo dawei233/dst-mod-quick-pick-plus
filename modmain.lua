@@ -1,5 +1,5 @@
 --=====================================================================
---  Quick Pick Plus · 快速采集（通用版）  v2.0.0
+--  Quick Pick Plus · 快速采集（通用版）  v2.1.0
 --  Copyright (C) 2026 dawei233
 --
 --  本程序为自由软件：你可以依据 GNU 通用公共许可证（GPL）的条款 ——
@@ -63,6 +63,15 @@
 --  【覆盖范围】wilson（服务端权威）+ wilson_client（客户端预测）两个图都补，
 --    否则会出现「客户端预测慢动作、服务端已经做完」的抖动。
 --
+--  【双端配置同步（v2.1.0 新增）】
+--    DST 的 mod 配置**没有服务端→客户端网络同步**：客户端读的是
+--    client_save/mod_config_data，与服务端 modoverrides.lua 是两份独立存储，
+--    引擎不会自动对齐。本 Mod 的 deststate 升级由「客户端预测、服务端权威」
+--    双端各自计算，一旦两端配置不同（例如用户在服务端关了某开关、客户端仍是
+--    默认开），就会出现动画时长/动作对不上的错乱（quick_eat 即此）。
+--    解法：客户端进入世界时向服务端请求配置，服务端把**权威值**打包推回，
+--    客户端用收到的值覆盖本端 CFG —— 从此两端一致（详见文件尾 RPC 段）。
+--
 --  【与上游项目的关系 / 许可】
 --    本项目基于工坊 GPL-3.0 项目「Quick Pick+ (Woby Edition)」by **Jotave**
 --    （工坊 3739258809）开发。来自该项目的做法：
@@ -84,17 +93,29 @@
 GLOBAL.setmetatable(env, { __index = function(t, k) return GLOBAL.rawget(GLOBAL, k) end })
 
 -- ---------------------------------------------------------------
--- 配置
+-- 配置（运行时表，而非加载时常量）
 -- ---------------------------------------------------------------
-local QuickPick     = GetModConfigData("pick_generic")
-local ClearJostle   = GetModConfigData("clear_jostle")
-local QuickSearch   = GetModConfigData("search_generic")
-local QuickHarvest  = GetModConfigData("quick_harvest")
-local QuickCook     = GetModConfigData("quick_cook_on_fire")
-local QuickRiding   = GetModConfigData("quick_riding")
-local QuickInteract = GetModConfigData("quick_plant_interact")
-local QuickEat      = GetModConfigData("quick_eat")
-local LureTake      = GetModConfigData("lureplant_take")
+-- 配置键与 modinfo.lua 的 configuration_options 一一对应。
+-- 顺序即「服务端→客户端」配置同步 RPC 的参数顺序（位打包，见文件尾 RPC 段）。
+local CFG_KEYS = {
+    "pick_generic", "clear_jostle", "search_generic", "quick_harvest",
+    "quick_cook_on_fire", "quick_riding", "quick_plant_interact",
+    "quick_eat", "lureplant_take",
+}
+
+-- 运行时配置表：双端各自在加载时读本端 GetModConfigData 初始化；
+-- 客户端随后会被服务端通过 ModRPC 推送的「服务端权威值」覆盖（见文件尾 RPC 段）。
+-- 之所以用表而不用加载时常量：Rule* / ApplyToSG 必须读「当前生效值」，
+-- 否则客户端即使收到 RPC 也无法改变行为。
+local CFG = {}
+for _, k in ipairs(CFG_KEYS) do
+    CFG[k] = GetModConfigData(k)
+end
+
+-- 运行时读取（避免在 Rule* / ApplyToSG 里捕获加载时常量）
+local function cfg(name)
+    return CFG[name]
+end
 
 -- ---------------------------------------------------------------
 -- 常量与工具
@@ -109,25 +130,26 @@ local function log(fmt, ...)
 end
 
 -- AddComponentPostInit 回调签名是 fn(组件实例, 实体)（entityscript.lua:639-641）
-local function TagOwner(comp, inst)
-    local e = inst or (comp ~= nil and comp.inst or nil)
-    if e ~= nil and not e:HasTag(FAST_TAG) then
-        e:AddTag(FAST_TAG)
+-- 仅当对应开关开启时才打标记；运行期读 cfg，保证客户端收到服务端同步后也一致。
+local function MakeTagger(opt_key)
+    return function(comp, inst)
+        if not cfg(opt_key) then
+            return
+        end
+        local e = inst or (comp ~= nil and comp.inst or nil)
+        if e ~= nil and not e:HasTag(FAST_TAG) then
+            e:AddTag(FAST_TAG)
+        end
     end
 end
 
 -- ---------------------------------------------------------------
 -- ① 零白名单标记（不含任何 prefab 名单）
 --    刻意不设 pickable.quickpick —— 见文件头「Woby 陷阱」。
---    这里也不做 "有没有 pickable 组件" 的守卫：农场作物只在可收获阶段
---    才加上 pickable，出生时是 nil，加了守卫反而会静默漏掉它们。
+--    无条件注册 hook（开关在 hook 内部按 cfg 判断），使双端结构完全一致。
 -- ---------------------------------------------------------------
-if QuickPick then
-    AddComponentPostInit("pickable", TagOwner)
-end
-if QuickSearch then
-    AddComponentPostInit("searchable", TagOwner)
-end
+AddComponentPostInit("pickable", MakeTagger("pick_generic"))
+AddComponentPostInit("searchable", MakeTagger("search_generic"))
 
 -- ---------------------------------------------------------------
 -- 判定
@@ -186,21 +208,23 @@ local function Patch(sg, action, rule)
 end
 
 -- ---- PICK：采集 ----------------------------------------------------
+-- pick_generic 是「通用快速采集」总开关：关掉则 PICK 完全不升级。
+-- 子开关 clear_jostle（摇晃也快）/ quick_riding（骑乘）在其下独立生效。
 local function RulePick(state, inst, act)
     if act == nil or act.target == nil or act.target:HasTag("noquickpick") then
         return nil
     end
-    if not IsFastTarget(act.target) then
+    if not cfg("pick_generic") then
         return nil
     end
     if IsRiding(inst) then
         -- 本体在 quickpick 判定之前就因骑乘返回慢动作（伍迪除外），要单独救
-        return (QuickRiding and SLOW[state]) and SHORT or nil
+        return (cfg("quick_riding") and SLOW[state]) and SHORT or nil
     end
     if state == "dojostleaction" then
         -- jostlepick 优先于 quickpick（本体故意如此，比如浆果丛要"摇一摇"）。
         -- 但"快速采集"的意图就是别等这段动画，所以默认也提速。
-        return ClearJostle and SHORT or nil
+        return cfg("clear_jostle") and SHORT or nil
     end
     if SLOW[state] then
         return SHORT
@@ -214,12 +238,20 @@ local function RuleRidingPickup(state, inst, act)
         return nil
     end
     -- 原版骑乘时一律 domediumaction；重物的 dodismountaction 不在 SLOW 里，不受影响
-    return (SLOW[state] and IsRiding(inst)) and SHORT or nil
+    return (SLOW[state] and IsRiding(inst) and cfg("quick_riding")) and SHORT or nil
 end
 
 -- ---- HARVEST / COOK / PLANTSOIL：慢就升级 ----------------------------
+-- 三者由不同开关控制，所以用 act.action 区分（HARVEST/COOK→quick_harvest，
+-- PLANTSOIL→quick_plant_interact）。这些动作的目标不会带 noquickpick，无需检查。
 local function RuleSlow(state, inst, act)
-    if act ~= nil and act.target ~= nil and act.target:HasTag("noquickpick") then
+    if act == nil then
+        return nil
+    end
+    local a = act.action
+    local on = ((a == ACTIONS.HARVEST or a == ACTIONS.COOK) and cfg("quick_harvest"))
+            or (a == ACTIONS.PLANTSOIL and cfg("quick_plant_interact"))
+    if not on then
         return nil
     end
     return SLOW[state] and SHORT or nil
@@ -228,6 +260,9 @@ end
 -- ---- INTERACT_WITH：只对"可对话的农场植物"提速 -----------------------
 -- 其它 INTERACT_WITH 用途（YOTB 舞台等）保持原样
 local function RuleTend(state, inst, act)
+    if not cfg("quick_plant_interact") then
+        return nil
+    end
     if act == nil or act.target == nil or not act.target:HasTag("tendable_farmplant") then
         return nil
     end
@@ -236,6 +271,9 @@ end
 
 -- ---- EAT：慢吃升级成快吃 --------------------------------------------
 local function RuleEat(state, inst, act)
+    if not cfg("quick_eat") then
+        return nil
+    end
     if state == "eat" then
         return "quickeat"
     end
@@ -250,39 +288,30 @@ local function RuleTake(state, inst, act)
     if act == nil or act.target == nil or act.target:HasTag("noquickpick") then
         return nil
     end
+    if not cfg("lureplant_take") then
+        return nil
+    end
     if not act.target:HasTag(TAKE_FAST_TAG) then
         return nil
     end
-    if IsRiding(inst) and not QuickRiding then
+    if IsRiding(inst) and not cfg("quick_riding") then
         return nil
     end
     return SLOW[state] and SHORT or nil
 end
 
+-- 所有动作无条件打补丁：是否"生效"改由 Rule* 读 cfg 决定。
+-- 这样双端装的补丁集合完全一致，行为只取决于同一份 CFG（客户端会被 RPC 覆盖为服务端值）。
 local function ApplyToSG(sg)
-    if QuickPick then
-        Patch(sg, ACTIONS.PICK, RulePick)
-    end
-    if QuickRiding then
-        Patch(sg, ACTIONS.PICKUP, RuleRidingPickup)
-    end
-    if QuickHarvest then
-        Patch(sg, ACTIONS.HARVEST, RuleSlow)
-    end
-    if QuickCook then
-        Patch(sg, ACTIONS.COOK, RuleSlow)
-    end
-    if QuickInteract then
-        Patch(sg, ACTIONS.INTERACT_WITH, RuleTend)
-        Patch(sg, ACTIONS.PLANTSOIL, RuleSlow)
-    end
-    if QuickEat then
-        Patch(sg, ACTIONS.EAT, RuleEat)
-    end
-    if LureTake then
-        Patch(sg, ACTIONS.TAKEITEM, RuleTake)
-        Patch(sg, ACTIONS.TAKESINGLEITEM, RuleTake)
-    end
+    Patch(sg, ACTIONS.PICK, RulePick)
+    Patch(sg, ACTIONS.PICKUP, RuleRidingPickup)
+    Patch(sg, ACTIONS.HARVEST, RuleSlow)
+    Patch(sg, ACTIONS.COOK, RuleSlow)
+    Patch(sg, ACTIONS.INTERACT_WITH, RuleTend)
+    Patch(sg, ACTIONS.PLANTSOIL, RuleSlow)
+    Patch(sg, ACTIONS.EAT, RuleEat)
+    Patch(sg, ACTIONS.TAKEITEM, RuleTake)
+    Patch(sg, ACTIONS.TAKESINGLEITEM, RuleTake)
 end
 
 AddStategraphPostInit("wilson", ApplyToSG)          -- 服务端权威
@@ -290,8 +319,12 @@ AddStategraphPostInit("wilson_client", ApplyToSG)   -- 客户端预测
 
 -- ---------------------------------------------------------------
 -- 骑乘解锁：本体没给这两个动作 mount_valid，骑乘时选项根本不出现
+-- 运行期按 cfg 设置（收到 RPC 后也会再同步一次）
 -- ---------------------------------------------------------------
-if QuickRiding then
+local function ApplyMountValid()
+    if not cfg("quick_riding") then
+        return
+    end
     if ACTIONS.TAKEITEM ~= nil then
         ACTIONS.TAKEITEM.mount_valid = true
     end
@@ -302,19 +335,99 @@ if QuickRiding then
         ACTIONS.HARVEST.mount_valid = true
     end
 end
+ApplyMountValid()   -- 加载时按本端配置设一次
 
 -- ---------------------------------------------------------------
 -- 食人花：它没有 pickable 组件（那坨肉走 TAKEITEM），单独打标记
+-- 同样运行期读 cfg，保证双端一致
 -- ---------------------------------------------------------------
-if LureTake then
-    AddPrefabPostInit("lureplant", function(inst)
+AddPrefabPostInit("lureplant", function(inst)
+    if cfg("lureplant_take") then
         inst:AddTag(TAKE_FAST_TAG)
-    end)
-end
+    end
+end)
 
 -- ---------------------------------------------------------------
 -- 加载自检
 -- ---------------------------------------------------------------
-log("v2.0.0 已加载（采集=%s 摇晃也快=%s 翻找=%s 收割=%s 篝火烤=%s 骑乘=%s 种植/对话=%s 进食=%s 食人花=%s）",
-    tostring(QuickPick), tostring(ClearJostle), tostring(QuickSearch), tostring(QuickHarvest),
-    tostring(QuickCook), tostring(QuickRiding), tostring(QuickInteract), tostring(QuickEat), tostring(LureTake))
+log("v2.1.0 已加载（采集=%s 摇晃也快=%s 翻找=%s 收割=%s 篝火烤=%s 骑乘=%s 种植/对话=%s 进食=%s 食人花=%s）",
+    tostring(cfg("pick_generic")), tostring(cfg("clear_jostle")), tostring(cfg("search_generic")),
+    tostring(cfg("quick_harvest")), tostring(cfg("quick_cook_on_fire")), tostring(cfg("quick_riding")),
+    tostring(cfg("quick_plant_interact")), tostring(cfg("quick_eat")), tostring(cfg("lureplant_take")))
+
+-- ===============================================================
+-- 双端配置同步（服务端 → 客户端）
+-- ---------------------------------------------------------------
+-- 问题：DST 的 mod 配置没有服务端→客户端网络同步。客户端读的是
+--      client_save/mod_config_data，与服务端 modoverrides.lua 是两份独立存储。
+--      本 Mod 的 deststate 升级由「客户端预测、服务端权威」双端各自计算，
+--      若双端配置不一致就会出现动画错乱（用户实测 quick_eat 即此）。
+-- 解法：客户端进入世界时向服务端请求配置，服务端把**权威值**打包后推回，
+--      客户端用收到的值覆盖本端 CFG，从此双端一致。
+-- 注意：RPC 的实际网络派发是引擎（C++）层；这里只负责 Lua 侧的注册与打包，
+--      所有 DST API 调用都加了 nil 守卫，老版本 / 离线桩缺失时不会崩。
+-- ===============================================================
+local RPC_NS   = "QuickPickPlus"
+local RPC_REQ  = "ReqCfg"    -- 客户端 → 服务端：请求配置
+local RPC_PUSH = "SyncCfg"   -- 服务端 → 客户端：推送配置（1 个整数，位打包 9 个开关）
+
+-- 把 CFG 表按 CFG_KEYS 顺序打包成一个整数（bit0 = pick_generic, bit1 = clear_jostle, ...）
+local function PackCfg()
+    local bits = 0
+    for i, k in ipairs(CFG_KEYS) do
+        if CFG[k] then
+            bits = bits + math.floor(2 ^ (i - 1))
+        end
+    end
+    return bits
+end
+
+-- 收到服务端推送：解包写回本端 CFG，并同步 mount_valid
+local function OnSyncCfg(bits)
+    bits = math.floor(bits or 0)
+    for i, k in ipairs(CFG_KEYS) do
+        CFG[k] = (math.floor(bits % 2) == 1)
+        bits = math.floor(bits / 2)
+    end
+    ApplyMountValid()
+end
+
+-- 服务端响应：把权威配置推给请求者（player 由引擎在 SendModRPCToServer 时填入）
+local function OnReqCfg(player)
+    if SendModRPCToClient ~= nil then
+        SendModRPCToClient(GetClientModRPC(RPC_NS, RPC_PUSH), player, PackCfg())
+    end
+end
+
+if AddModRPCHandler ~= nil then
+    AddModRPCHandler(RPC_NS, RPC_REQ, OnReqCfg)
+end
+if AddClientModRPCHandler ~= nil then
+    AddClientModRPCHandler(RPC_NS, RPC_PUSH, OnSyncCfg)
+end
+
+-- 客户端进世界后向服务端请求一次配置（重连 / 中途加入也会再触发）
+local function RequestFromServer()
+    if SendModRPCToServer == nil or GetModRPC == nil then return end
+    local rpcid = GetModRPC(RPC_NS, RPC_REQ)
+    if rpcid == nil then return end
+    SendModRPCToServer(rpcid)
+end
+
+local function TryRequestAsClient(inst)
+    -- 仅客户端（非 master 分片）发起；服务端 world 是 master，跳过。
+    -- 注意：AddSimPostInit 回调的 world 参数是 nil，不能用它判断，要查 GLOBAL.TheWorld。
+    local TW = (GLOBAL ~= nil and GLOBAL.TheWorld) or nil
+    if TW ~= nil and TW.ismastersim == true then return end
+    if inst ~= nil and inst.DoTaskInTime ~= nil then
+        inst:DoTaskInTime(1, RequestFromServer)   -- 延迟 1s，确保 ModRPC 网络握手完成
+    else
+        RequestFromServer()
+    end
+end
+
+if AddPlayerPostInit ~= nil then
+    AddPlayerPostInit(function(inst) TryRequestAsClient(inst) end)
+elseif AddSimPostInit ~= nil then
+    AddSimPostInit(function() TryRequestAsClient(nil) end)
+end

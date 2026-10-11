@@ -50,6 +50,13 @@ description = Lg and
 所有项目都尽量全部开源，遵循 GPL-3.0（或沿用上游原有许可证）。
 源码：https://github.com/dawei233/dst-mod-quick-pick-plus
 
+【v2.1.0 · 双端配置自动同步（修了「关掉开关却仍异常」的坑）】
+之前如果在服务端关掉某个开关（例如「快速进食」），客户端读的是自己那份
+独立的配置、跟服务端对不上，就会出现动画错乱（比如关了快速进食、吃肉却还是
+单手快动作）。现在改由服务端通过 ModRPC 把配置自动推送给客户端，两端永远一致。
+注意：以【服务端】配置为准——开启 / 关闭开关请改服务端（世界）的 mod 配置；
+客户端 mod 配置界面上的开关会自动跟随服务端，不再各自为政。
+
 因上述渊源，本项目依 GPL-3.0 发布。]]
 or
 [[Makes almost everything pick quickly -- with NO prefab whitelist.
@@ -89,10 +96,19 @@ that keeps up with game updates and covers more. Everything is open-sourced
 where possible, under GPL-3.0 (or the upstream licence).
 Source: https://github.com/dawei233/dst-mod-quick-pick-plus
 
+[v2.1.0 · automatic client-server config sync]
+Previously, if you turned an option off on the server (e.g. Quick Eat), the
+client read its own separate config and the two sides disagreed, causing
+animation glitches (e.g. meat still played the fast single-hand animation even
+with Quick Eat off). Now the server pushes its config to clients via ModRPC,
+so both sides always agree.
+Note: the SERVER config is authoritative -- turn options on/off in the server
+(world) mod config; the client mod config screen follows the server automatically.
+
 Released under GPL-3.0, same as both upstream projects.]]
 
 author = "dawei233"
-version = "2.0.0"
+version = "2.1.0"
 forumthread = "https://github.com/dawei233/dst-mod-quick-pick-plus"
 
 api_version = 10
